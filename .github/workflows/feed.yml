@@ -1,0 +1,100 @@
+# Este ficheiro vive no repositório PÚBLICO dos feeds (ex.: kokua-feeds), em .github/workflows/feed.yml.
+# A cópia de referência está no repositório privado do código, em deploy/feeds-publico/.
+#
+# O que faz, uma vez por dia: vai buscar o código do Kokua ao repositório privado (só leitura),
+# recolhe os eventos e publica no GitHub Pages deste repositório os feeds e as páginas legais.
+# O código não fica neste repositório: só o resultado.
+#
+# Configuração (Settings → Secrets and variables → Actions), ver docs/hospedagem-feeds.md no código:
+#   Secrets:    KOKUA_CODE_DEPLOY_KEY   chave SSH privada, só de leitura, do repositório do código
+#               TICKETMASTER_API_KEY    chave da Ticketmaster Discovery API
+#               KOKUA_CATALOG_SECRET    segredo que só permite gravar o catálogo de eventos no Supabase
+#   Variables:  KOKUA_CODE_REPO         dono/nome do repositório do código (Tropical-tech0/kokua-app)
+#               KOKUA_BOT_CONTACT       endereço de contacto enviado aos sites das fontes (a página deste repositório)
+#               KOKUA_CATALOG_URL       endereço do projeto Supabase
+#               KOKUA_CATALOG_KEY       chave PÚBLICA do Supabase (a mesma da app; nunca a chave de serviço)
+#               KOKUA_CATALOG_REQUIRED  1 = falhar se o catálogo não estiver configurado (definir no G3)
+#
+# As actions estão fixadas pelo commit (SHA completo), com a versão em comentário: uma etiqueta como "v7" pode
+# ser movida por quem publica a action; um commit não. Para atualizar, troca-se o SHA e o comentário juntos,
+# conferindo o SHA na página de releases da action (https://github.com/actions/<nome>/releases).
+name: Atualizar eventos
+
+on:
+  schedule:
+    - cron: '30 4 * * *'   # todos os dias às 04:30 UTC (04:30 ou 05:30 em Lisboa)
+  workflow_dispatch: {}    # permite correr à mão no separador "Actions"
+
+# Nenhuma permissão por omissão: cada job pede só o que usa.
+permissions: {}
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # Só leitura. O código vem do repositório privado pela chave SSH, não por este token.
+    permissions:
+      contents: read
+    steps:
+      - name: Código do Kokua (repositório privado, só leitura)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.KOKUA_CODE_REPO }}
+          ssh-key: ${{ secrets.KOKUA_CODE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24   # executa TypeScript diretamente; o agregador não precisa de npm install
+          package-manager-cache: false   # nada é instalado, não há o que guardar em cache
+
+      - id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Recolher eventos
+        env:
+          TICKETMASTER_API_KEY: ${{ secrets.TICKETMASTER_API_KEY }}
+          # Reaproveita os eventos de fontes que falhem hoje (ex.: site em baixo)
+          PREVIOUS_FEED_URL: ${{ steps.pages.outputs.base_url }}/feeds
+          KOKUA_BOT_CONTACT: ${{ vars.KOKUA_BOT_CONTACT }}
+          # Catálogo de eventos no Supabase: chave pública + segredo que só grava o catálogo
+          KOKUA_CATALOG_URL: ${{ vars.KOKUA_CATALOG_URL }}
+          KOKUA_CATALOG_KEY: ${{ vars.KOKUA_CATALOG_KEY }}
+          KOKUA_CATALOG_SECRET: ${{ secrets.KOKUA_CATALOG_SECRET }}
+          # Com valor (ex.: 1), a falta das variáveis do catálogo passa a ser erro. Definir no G3, quando o catálogo existir.
+          KOKUA_CATALOG_REQUIRED: ${{ vars.KOKUA_CATALOG_REQUIRED }}
+        run: node scripts/aggregate.ts
+
+      - name: Gerar páginas públicas (privacidade, termos)
+        run: node scripts/build-site.ts
+
+      - name: Conferir o que vai ser publicado
+        run: |
+          test -s _site/feeds/overview.json
+          test -s _site/privacidade.html
+          test -s _site/termos.html
+          test -n "$(ls -A _site/feeds/tiles)"
+          test -n "$(ls -A _site/feeds/lookup)"
+          echo "zonas: $(ls _site/feeds/tiles | wc -l)  índice: $(ls _site/feeds/lookup | wc -l)  tamanho: $(du -sh _site | cut -f1)"
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # Só este job publica: escreve no GitHub Pages e pede o token de identidade que o Pages exige.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
