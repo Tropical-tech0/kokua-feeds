@@ -21,8 +21,11 @@
 name: Atualizar eventos
 
 on:
+  # Todos os dias às 04:17 UTC (04:17 ou 05:17 em Lisboa). Fora da hora certa e da meia hora de propósito:
+  # o GitHub pode atrasar ou descartar execuções agendadas nas horas de mais carga. Em 17/11/2026, com a
+  # agenda às 04:30, a execução não aconteceu. O workflow vigia.yml confere se a recolha do dia aconteceu.
   schedule:
-    - cron: '30 4 * * *'   # todos os dias às 04:30 UTC (04:30 ou 05:30 em Lisboa)
+    - cron: '17 4 * * *'
   workflow_dispatch: {}    # permite correr à mão no separador "Actions"
 
 # Nenhuma permissão por omissão: cada job pede só o que usa.

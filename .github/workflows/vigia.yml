@@ -1,0 +1,71 @@
+# Este ficheiro vive no repositório PÚBLICO dos feeds (ex.: kokua-feeds), em .github/workflows/vigia.yml.
+# A cópia de referência está no repositório privado do código, em deploy/feeds-publico/.
+#
+# O que faz, duas vezes por dia: confere se a recolha diária ("Atualizar eventos", feed.yml) aconteceu hoje.
+#   - Houve uma execução bem-sucedida, ou há uma a correr: não faz nada.
+#   - Não houve nenhuma: dispara a recolha e abre um aviso (issue) neste repositório.
+#   - Houve, mas nenhuma terminou bem: só abre o aviso. NÃO repete a recolha, para não voltar a pedir
+#     às fontes no mesmo dia.
+# Nos dois últimos casos termina com erro, para o GitHub também avisar da execução falhada.
+#
+# Porquê: o GitHub pode atrasar ou descartar execuções agendadas e não avisa quando isso acontece
+# (em 17/11/2026 a recolha agendada não aconteceu). Este vigia também é agendado, por isso corre duas vezes.
+#
+# Não usa segredos nem actions de terceiros: só o `gh` e o `jq` que já vêm nas máquinas do GitHub,
+# com o token da própria execução.
+name: Vigia da recolha diária
+
+on:
+  schedule:
+    - cron: '47 7 * * *'    # 07:47 UTC: 3 h 30 min depois da hora da recolha (04:17 UTC)
+    - cron: '47 13 * * *'   # 13:47 UTC: segunda conferência, caso a primeira seja descartada
+  workflow_dispatch: {}     # permite testar à mão no separador "Actions"
+
+# Nenhuma permissão por omissão: o job pede só o que usa.
+permissions: {}
+
+concurrency:
+  group: vigia
+  cancel-in-progress: false
+
+jobs:
+  vigia:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write   # ler as execuções da recolha e dispará-la
+      issues: write    # abrir o aviso
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: A recolha de hoje aconteceu?
+        run: |
+          set -euo pipefail
+          hoje=$(date -u +%Y-%m-%d)
+          # Execuções da recolha criadas hoje (UTC), agendadas ou manuais. %3E%3D é ">=".
+          runs=$(gh api "repos/$GH_REPO/actions/workflows/feed.yml/runs?created=%3E%3D$hoje&per_page=50")
+          total=$(echo "$runs" | jq '.workflow_runs | length')
+          boas=$(echo "$runs" | jq '[.workflow_runs[] | select(.conclusion == "success" or .status != "completed")] | length')
+          echo "Execuções da recolha em $hoje: $total (bem-sucedidas ou a correr: $boas)"
+          if [ "$boas" -gt 0 ]; then
+            echo "A recolha de hoje aconteceu. Nada a fazer."
+            exit 0
+          fi
+
+          if [ "$total" -eq 0 ]; then
+            titulo="A recolha diária de $hoje não aconteceu"
+            corpo="Nenhuma execução de 'Atualizar eventos' em $hoje (UTC). O vigia disparou a recolha agora."
+            gh workflow run feed.yml
+          else
+            titulo="A recolha diária de $hoje falhou"
+            corpo="Houve $total execução(ões) de 'Atualizar eventos' em $hoje (UTC), nenhuma bem-sucedida. A recolha NÃO foi repetida."
+          fi
+
+          # Um aviso por dia e por caso: a segunda conferência não abre outro igual.
+          abertas=$(gh issue list --state open --search "\"$titulo\" in:title" --json number --jq 'length')
+          if [ "$abertas" -eq 0 ]; then
+            gh issue create --title "$titulo" --body "$corpo"
+          fi
+          echo "::error::$titulo"
+          exit 1
